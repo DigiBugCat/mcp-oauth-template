@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # MCP server with proper rmcp implementation
+  mcp-server:
+    build: ./mcp-server
+    container_name: ${MCP_SERVER_NAME}-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - RUST_LOG=mcp_server=info,tower_http=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Cloudflare tunnel
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: ${TUNNEL_NAME}-cloudflared
+    restart: unless-stopped
+    network_mode: "service:mcp-server"
+    command: tunnel run
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    depends_on:
+      - mcp-server
+    # healthcheck:
+    #   test: ["CMD", "cloudflared", "tunnel", "info"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+
+volumes:
+  mcp_data:

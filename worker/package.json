@@ -1,0 +1,25 @@
+{
+  "name": "mcp-oauth-worker",
+  "version": "1.0.0",
+  "description": "OAuth 2.1 provider for MCP servers using GitHub",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "dev:watch": "nodemon -w .dev.vars -w src -e ts,js,json --exec 'wrangler dev'",
+    "deploy": "wrangler deploy",
+    "test": "vitest",
+    "build": "wrangler build"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.0.5",
+    "hono": "^4.8.4",
+    "octokit": "^5.0.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "nodemon": "^3.1.10",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0",
+    "wrangler": "^4.23.0"
+  }
+}

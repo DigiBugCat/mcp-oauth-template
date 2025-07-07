@@ -1,0 +1,81 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfplan
+terraform/*.tfvars
+terraform/.terraform.lock.hcl
+terraform/terraform.tfvars
+
+# Cloudflare tunnel
+cloudflared/
+docker/cloudflared/
+docker/cloudflared/config.yml
+docker/cloudflared/credentials.json
+docker/cloudflared/*.pem
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Worker build outputs
+worker/dist/
+worker/.wrangler/
+worker/build/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Claude settings
+.claude/
+
+# Test artifacts
+coverage/
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+
+# Local development
+.cache/
+.parcel-cache/
+
+# Test and debug files
+worker/test-*.html
+worker/debug-*.sh
+worker/test-*.sh
+
+# Local development files
+docker/terraform.tfstate
+docker/mcp-server/Dockerfile.working
+docker/mcp-server/Cargo.toml.crates
+worker/.dev.vars
+worker/**/.dev.vars
+.env.*
+**/*.local.*
+terraform/terraform.local.tfvars
+
+# Git history reference (private)
+git-history-reference.txt

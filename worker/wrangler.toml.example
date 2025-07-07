@@ -1,0 +1,50 @@
+name = "mcp-oauth-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# KV namespaces - these IDs should be obtained from Terraform outputs
+# Run `terraform output kv_namespace_ids` after deployment to get these values
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "YOUR_OAUTH_KV_NAMESPACE_ID"  # Replace with your actual KV namespace ID
+
+[[kv_namespaces]]
+binding = "SESSION_KV"
+id = "YOUR_SESSION_KV_NAMESPACE_ID"  # Replace with your actual KV namespace ID
+
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[[env.production.kv_namespaces]]
+binding = "OAUTH_KV"
+id = "YOUR_PRODUCTION_OAUTH_KV_ID"  # Replace with production KV namespace ID
+
+[[env.production.kv_namespaces]]
+binding = "SESSION_KV"
+id = "YOUR_PRODUCTION_SESSION_KV_ID"  # Replace with production KV namespace ID
+
+[[env.production.durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
+# Routes are managed via API to avoid conflicts
+# If you need to manually configure routes, uncomment and update:
+# [[env.production.routes]]
+# pattern = "your-subdomain.your-domain.com/*"
+# zone_id = "YOUR_ZONE_ID"
+
+[observability]
+enabled = true
+
+# Cron trigger for periodic cleanup (runs every hour)
+[triggers]
+crons = ["0 * * * *"]
+
+# Durable Objects migrations
+[[migrations]]
+tag = "v1"
+new_classes = ["RateLimiter"]

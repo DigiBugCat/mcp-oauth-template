@@ -1,0 +1,18 @@
+# GitHub OAuth App Credentials
+GITHUB_CLIENT_ID=your_github_client_id
+GITHUB_CLIENT_SECRET=your_github_client_secret
+
+# OAuth Provider Configuration
+COOKIE_ENCRYPTION_KEY=your_random_encryption_key_at_least_32_chars
+
+# MCP Server Configuration
+MCP_SERVER_URL=http://localhost:8080
+
+# Optional: Access Control (comma-separated lists)
+# ALLOWED_GITHUB_USERS=user1,user2
+# ALLOWED_GITHUB_ORGS=org1,org2
+# ALLOWED_GITHUB_TEAMS=org1/team1,org2/team2
+# ALLOWED_EMAIL_DOMAINS=company.com,example.org
+
+# Optional: Public URL (for production)
+# PUBLIC_URL=https://oauth.example.com
