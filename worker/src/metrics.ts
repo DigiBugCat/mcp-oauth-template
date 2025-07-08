@@ -105,7 +105,7 @@ export class MetricsCollector {
     const key = `metrics:${hour}:${Date.now()}`;
     
     try {
-      await this.env.OAUTH_KV.put(
+      await this.env.KV.put(
         key,
         JSON.stringify(metrics),
         { expirationTtl: 7 * 24 * 60 * 60 } // 7 days
@@ -131,7 +131,7 @@ export class MetricsCollector {
     const endHour = new Date(endTime).toISOString().substring(0, 13);
     
     // List all metric keys in the time range
-    const keys = await this.env.OAUTH_KV.list({
+    const keys = await this.env.KV.list({
       prefix: 'metrics:',
       limit: 1000,
     });
@@ -139,7 +139,7 @@ export class MetricsCollector {
     for (const key of keys.keys) {
       const hour = key.name.split(':')[1];
       if (hour >= startHour && hour <= endHour) {
-        const data = await this.env.OAUTH_KV.get(key.name);
+        const data = await this.env.KV.get(key.name);
         if (data) {
           try {
             const bucketMetrics = JSON.parse(data) as Metric[];

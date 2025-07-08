@@ -78,4 +78,4 @@ worker/**/.dev.vars
 terraform/terraform.local.tfvars
 
 # Git history reference (private)
-git-history-reference.txt
+/requirements/

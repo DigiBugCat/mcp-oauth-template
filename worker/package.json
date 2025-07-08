@@ -1,7 +1,7 @@
 {
   "name": "mcp-oauth-worker",
-  "version": "1.0.0",
-  "description": "OAuth 2.1 provider for MCP servers using GitHub",
+  "version": "2.0.0",
+  "description": "MCP-compliant OAuth 2.1 authorization server with GitHub authentication",
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev",
@@ -11,7 +11,6 @@
     "build": "wrangler build"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.0.5",
     "hono": "^4.8.4",
     "octokit": "^5.0.3"
   },

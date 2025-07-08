@@ -4,22 +4,18 @@ import type { Env } from "./types";
  * Initialize pre-configured OAuth clients from environment configuration
  */
 export async function initializeClients(env: Env) {
-  console.log("🔍 CLIENT-INIT DEBUG: Starting client initialization");
   try {
     // Parse pre-configured clients from environment variable
     const preConfiguredClients = env.PRECONFIGURED_OAUTH_CLIENTS;
     if (!preConfiguredClients) {
-      console.log("🔍 CLIENT-INIT DEBUG: No pre-configured OAuth clients found");
       return;
     }
 
-    console.log("🔍 CLIENT-INIT DEBUG: Found pre-configured clients env var");
     const clients = JSON.parse(preConfiguredClients);
-    console.log(`🔍 CLIENT-INIT DEBUG: Parsed ${clients.length} pre-configured clients`);
     
     for (const client of clients) {
       const clientKey = `client:${client.client_id}`;
-      const existingClient = await env.OAUTH_KV.get(clientKey);
+      const existingClient = await env.KV.get(clientKey);
       
       if (!existingClient) {
         // Ensure client has all required fields for OAuth provider
@@ -34,8 +30,7 @@ export async function initializeClients(env: Env) {
           client_secret: client.client_secret !== undefined ? client.client_secret : "",
         };
         
-        await env.OAUTH_KV.put(clientKey, JSON.stringify(completeClient));
-        console.log(`🔍 CLIENT-INIT DEBUG: Initialized client: ${client.client_name || client.client_id} (${client.client_id})`);
+        await env.KV.put(clientKey, JSON.stringify(completeClient));
       } else {
         // Check if we need to update existing client with new format
         const existing = JSON.parse(existingClient);
@@ -48,14 +43,12 @@ export async function initializeClients(env: Env) {
             client_secret: "",
             token_endpoint_auth_method: "none",
           };
-          await env.OAUTH_KV.put(clientKey, JSON.stringify(completeClient));
+          await env.KV.put(clientKey, JSON.stringify(completeClient));
           console.log(`🔍 CLIENT-INIT DEBUG: Claude Desktop client updated with empty secret`);
         } else {
-          console.log(`🔍 CLIENT-INIT DEBUG: Client already exists: ${client.client_id}`);
-        }
+          }
       }
     }
-    console.log("🔍 CLIENT-INIT DEBUG: Client initialization complete");
   } catch (error) {
     console.error("🔍 CLIENT-INIT DEBUG: Error initializing clients:", error);
     console.error("🔍 CLIENT-INIT DEBUG: Error stack:", error.stack);

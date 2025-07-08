@@ -2,15 +2,10 @@ name = "mcp-oauth-worker"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
-# KV namespaces - these IDs should be obtained from Terraform outputs
-# or created manually via Cloudflare dashboard
+# KV namespace - single namespace for all OAuth data
 [[kv_namespaces]]
-binding = "OAUTH_KV"
-id = "YOUR_OAUTH_KV_NAMESPACE_ID"  # Replace with your actual KV namespace ID
-
-[[kv_namespaces]]
-binding = "SESSION_KV"
-id = "YOUR_SESSION_KV_NAMESPACE_ID"  # Replace with your actual KV namespace ID
+binding = "KV"
+id = "YOUR_KV_NAMESPACE_ID"  # Replace with your actual KV namespace ID
 
 [[durable_objects.bindings]]
 name = "RATE_LIMITER"
@@ -20,12 +15,8 @@ class_name = "RateLimiter"
 vars = { ENVIRONMENT = "production" }
 
 [[env.production.kv_namespaces]]
-binding = "OAUTH_KV"
-id = "YOUR_PRODUCTION_OAUTH_KV_ID"  # Replace with production KV namespace ID
-
-[[env.production.kv_namespaces]]
-binding = "SESSION_KV"
-id = "YOUR_PRODUCTION_SESSION_KV_ID"  # Replace with production KV namespace ID
+binding = "KV"
+id = "YOUR_PRODUCTION_KV_ID"  # Replace with production KV namespace ID
 
 [[env.production.durable_objects.bindings]]
 name = "RATE_LIMITER"

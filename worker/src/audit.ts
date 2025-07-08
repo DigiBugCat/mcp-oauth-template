@@ -53,7 +53,7 @@ export class AuditLogger {
 
     // Store in KV with TTL of 90 days
     const ttl = 90 * 24 * 60 * 60; // 90 days in seconds
-    await this.env.OAUTH_KV.put(
+    await this.env.KV.put(
       `audit:${auditLog.id}`,
       JSON.stringify(auditLog),
       { expirationTtl: ttl }
@@ -61,7 +61,7 @@ export class AuditLogger {
 
     // Also store by date for easier querying
     const dateKey = `audit:date:${auditLog.timestamp.split('T')[0]}:${auditLog.id}`;
-    await this.env.OAUTH_KV.put(dateKey, auditLog.id, { expirationTtl: ttl });
+    await this.env.KV.put(dateKey, auditLog.id, { expirationTtl: ttl });
 
     // Log to console for immediate visibility
     this.logger.info('Audit event', {
@@ -91,7 +91,7 @@ export class AuditLogger {
       const start = startDate || '2020-01-01';
       const end = endDate || new Date().toISOString().split('T')[0];
       
-      const dateKeys = await this.env.OAUTH_KV.list({
+      const dateKeys = await this.env.KV.list({
         prefix: 'audit:date:',
         limit: 1000,
       });
@@ -99,9 +99,9 @@ export class AuditLogger {
       for (const key of dateKeys.keys) {
         const date = key.name.split(':')[2];
         if (date >= start && date <= end) {
-          const auditId = await this.env.OAUTH_KV.get(key.name);
+          const auditId = await this.env.KV.get(key.name);
           if (auditId) {
-            const auditData = await this.env.OAUTH_KV.get(`audit:${auditId}`);
+            const auditData = await this.env.KV.get(`audit:${auditId}`);
             if (auditData) {
               const log = JSON.parse(auditData) as AuditLog;
               
@@ -118,14 +118,14 @@ export class AuditLogger {
       }
     } else {
       // No date range, scan all audit logs
-      const auditKeys = await this.env.OAUTH_KV.list({
+      const auditKeys = await this.env.KV.list({
         prefix: 'audit:',
         limit: 1000,
       });
 
       for (const key of auditKeys.keys) {
         if (!key.name.includes(':date:')) {
-          const auditData = await this.env.OAUTH_KV.get(key.name);
+          const auditData = await this.env.KV.get(key.name);
           if (auditData) {
             const log = JSON.parse(auditData) as AuditLog;
             

@@ -1,126 +1,88 @@
-import OAuthProvider from "@cloudflare/workers-oauth-provider";
-import { GitHubHandler } from "./github-handler";
-import { mcpProxyHandler } from "./mcp-proxy";
-import { initializeClients } from "./client-init";
-import { createLogger } from "./logger";
-import { validateConfiguration, getConfigSummary } from "./config-validator";
-import { AuditLogger } from "./audit";
-import { checkRateLimit, RateLimiter } from "./rate-limiter";
-import { MetricsCollector } from "./metrics";
-import { handleRefreshTokenGrant } from "./oauth-extensions";
-import { mcpAuthHandler } from "./mcp-auth-handler";
-import type { Env } from "./types";
-import type { Props } from "./oauth-utils";
+import { Hono } from 'hono';
+import type { Env } from './types';
+import { createLogger } from './logger';
+import { AuditLogger } from './audit';
+import { MetricsCollector } from './metrics';
+import { validateConfiguration, getConfigSummary } from './config-validator';
+import { initializeClients } from './client-init';
 
-export { RateLimiter };
+// Import new OAuth server
+import { oauthServer } from './oauth/server';
+import { mcpAuthHandler } from './mcp/auth';
 
-/**
- * Wrapper class for the MCP proxy handler
- */
-class MCPProxyHandler {
-  async fetch(request: Request, env: Env, ctx: { props: Props }): Promise<Response> {
-    return mcpProxyHandler(request, env, ctx);
-  }
-}
+// Import security middleware
+import { 
+  securityHeaders,
+  dnsRebindingProtection,
+  requestValidation,
+  corsMiddleware
+} from './security/middleware';
+import { DEFAULT_MCP_CORS } from './security/utils';
 
-/**
- * Main OAuth Provider configuration
- */
-const provider = new OAuthProvider({
-  // Protected API routes - these require OAuth authentication
-  // Using /mcp as the protected route prefix
-  apiRoute: "/mcp",
-  
-  // Handler for authenticated API requests - proxies to MCP server
-  apiHandler: new MCPProxyHandler(),
-  
-  // Handler for non-API routes (authorization, callbacks, metadata)
-  defaultHandler: GitHubHandler,
-  
-  // OAuth endpoints
-  authorizeEndpoint: "/oauth/authorize",
-  tokenEndpoint: "/oauth/token", 
-  clientRegistrationEndpoint: "/oauth/register",
-  
-  // Token introspection endpoint
-  introspectionEndpoint: "/oauth/introspect",
-  
-  // Token revocation endpoint
-  revocationEndpoint: "/oauth/revoke",
-  
-  // Token exchange callback for auditing
-  tokenExchangeCallback: async (props, accessToken) => {
-    // props.env might not be available in this callback
-    console.log('Token exchange callback', { 
-      client_id: props.client_id,
-      has_access_token: !!accessToken,
-    });
-    return accessToken;
-  },
-});
+// Create main application
+const app = new Hono<{ Bindings: Env }>();
 
-// Health check handler
-async function handleHealthCheck(env: Env): Promise<Response> {
-  const logger = createLogger('HealthCheck', env);
+// Global middleware
+app.use('*', securityHeaders);
+app.use('*', dnsRebindingProtection);
+app.use('*', requestValidation);
+
+// Health check endpoint
+app.get('/health', async (c) => {
+  const logger = createLogger('HealthCheck', c.env);
   const health = {
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    environment: env.ENVIRONMENT || 'development',
-    config: getConfigSummary(env),
+    environment: c.env.ENVIRONMENT || 'development',
+    config: getConfigSummary(c.env),
     checks: {
-      oauth_kv: false,
-      session_kv: false,
+      kv: false,
       mcp_server: false,
       github_oauth: false,
     },
   };
 
   try {
-    // Check KV namespaces
-    await env.OAUTH_KV.get('health_check');
-    health.checks.oauth_kv = true;
-    
-    await env.SESSION_KV.get('health_check');
-    health.checks.session_kv = true;
+    // Check KV namespace
+    await c.env.KV.get('health_check');
+    health.checks.kv = true;
 
     // Check MCP server connectivity
-    try {
-      const response = await fetch(env.MCP_SERVER_URL, {
-        method: 'HEAD',
-        signal: AbortSignal.timeout(5000),
-      });
-      health.checks.mcp_server = response.ok || response.status === 405;
-    } catch {
-      health.checks.mcp_server = false;
+    if (c.env.MCP_SERVER_URL) {
+      try {
+        const response = await fetch(c.env.MCP_SERVER_URL, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(5000),
+        });
+        health.checks.mcp_server = response.ok || response.status === 405;
+      } catch {
+        health.checks.mcp_server = false;
+      }
     }
 
     // Check GitHub OAuth config
-    health.checks.github_oauth = !!(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET);
+    health.checks.github_oauth = !!(c.env.GITHUB_CLIENT_ID && c.env.GITHUB_CLIENT_SECRET);
 
     // Overall health status
     const allHealthy = Object.values(health.checks).every(check => check === true);
     health.status = allHealthy ? 'healthy' : 'degraded';
 
   } catch (error) {
-    logger.error('Health check failed', { error: error instanceof Error ? error.message : String(error) });
+    logger.error('Health check failed', { 
+      error: error instanceof Error ? error.message : String(error) 
+    });
     health.status = 'unhealthy';
   }
 
   const statusCode = health.status === 'healthy' ? 200 : 503;
   
-  return new Response(JSON.stringify(health, null, 2), {
-    status: statusCode,
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-store',
-    },
-  });
-}
+  return c.json(health, statusCode);
+});
 
-// Metrics endpoint handler
-async function handleMetricsEndpoint(request: Request, env: Env): Promise<Response> {
-  const logger = createLogger('MetricsEndpoint', env);
-  const url = new URL(request.url);
+// Metrics endpoint
+app.get('/metrics', async (c) => {
+  const logger = createLogger('MetricsEndpoint', c.env);
+  const url = new URL(c.req.url);
   
   // Parse query parameters
   const metricName = url.searchParams.get('name');
@@ -131,13 +93,18 @@ async function handleMetricsEndpoint(request: Request, env: Env): Promise<Respon
   const startTime = endTime - (hoursAgo * 60 * 60 * 1000);
   
   try {
-    const metrics = new MetricsCollector(env);
+    const metrics = new MetricsCollector(c.env);
     
     if (metricName) {
       // Get aggregated metrics for a specific metric
-      const aggregated = await metrics.getAggregatedMetrics(startTime, endTime, metricName, aggregation);
+      const aggregated = await metrics.getAggregatedMetrics(
+        startTime, 
+        endTime, 
+        metricName, 
+        aggregation
+      );
       
-      return new Response(JSON.stringify({
+      return c.json({
         metric: metricName,
         aggregation,
         timeRange: {
@@ -145,12 +112,6 @@ async function handleMetricsEndpoint(request: Request, env: Env): Promise<Respon
           end: new Date(endTime).toISOString(),
         },
         data: aggregated,
-      }, null, 2), {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'max-age=60',
-        },
       });
     } else {
       // Get raw metrics
@@ -166,31 +127,91 @@ async function handleMetricsEndpoint(request: Request, env: Env): Promise<Respon
         summary[metric.name].latest = metric.value;
       }
       
-      return new Response(JSON.stringify({
+      return c.json({
         timeRange: {
           start: new Date(startTime).toISOString(),
           end: new Date(endTime).toISOString(),
         },
         summary,
         totalMetrics: rawMetrics.length,
-      }, null, 2), {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'max-age=60',
-        },
       });
     }
   } catch (error) {
-    logger.error('Failed to fetch metrics', { error: error.message });
-    return new Response(JSON.stringify({ error: 'Failed to fetch metrics' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
+    logger.error('Failed to fetch metrics', { 
+      error: error instanceof Error ? error.message : String(error) 
     });
+    return c.json({ error: 'Failed to fetch metrics' }, 500);
   }
-}
+});
 
-// Wrapper to ensure clients are initialized and add our custom endpoints
+// OAuth 2.0 Discovery Endpoints (RFC 8414) - must be at root level
+app.get('/.well-known/oauth-authorization-server', async (c) => {
+  const baseUrl = c.env.PUBLIC_URL || new URL(c.req.url).origin;
+  
+  return c.json({
+    issuer: baseUrl,
+    authorization_endpoint: `${baseUrl}/oauth/authorize`,
+    token_endpoint: `${baseUrl}/oauth/token`,
+    registration_endpoint: `${baseUrl}/oauth/register`,
+    introspection_endpoint: `${baseUrl}/oauth/introspect`,
+    revocation_endpoint: `${baseUrl}/oauth/revoke`,
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code', 'client_credentials', 'refresh_token'],
+    scopes_supported: ['mcp'],
+    code_challenge_methods_supported: ['S256'], // Only S256, plain is not supported
+    token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic', 'none'],
+    introspection_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic', 'none'],
+    revocation_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic', 'none'],
+    service_documentation: 'https://github.com/modelcontextprotocol/specification',
+    ui_locales_supported: ['en'],
+    // MCP-specific metadata
+    mcp_endpoint: `${baseUrl}/mcp`,
+    mcp_transport_types: ['sse', 'http'],
+  });
+});
+
+app.get('/.well-known/oauth-protected-resource', async (c) => {
+  const baseUrl = c.env.PUBLIC_URL || new URL(c.req.url).origin;
+  
+  return c.json({
+    resource: baseUrl,
+    authorization_servers: [baseUrl],
+    scopes_supported: ['mcp'],
+    bearer_methods_supported: ['header'], // No query parameter support!
+    resource_documentation: 'https://github.com/modelcontextprotocol/specification',
+  });
+});
+
+// Mount OAuth server at /oauth
+app.route('/oauth', oauthServer);
+
+// MCP endpoints with optional authentication
+app.all('/mcp/*', corsMiddleware(DEFAULT_MCP_CORS), async (c) => {
+  // Check if authentication is disabled
+  if (c.env.DISABLE_MCP_AUTH === 'true') {
+    const { mcpProxyHandler } = await import('./mcp/proxy');
+    return mcpProxyHandler(c.req.raw, c.env, null);
+  } else {
+    return mcpAuthHandler(c.req.raw, c.env, c.executionCtx);
+  }
+});
+
+app.all('/mcp', corsMiddleware(DEFAULT_MCP_CORS), async (c) => {
+  // Check if authentication is disabled
+  if (c.env.DISABLE_MCP_AUTH === 'true') {
+    const { mcpProxyHandler } = await import('./mcp/proxy');
+    return mcpProxyHandler(c.req.raw, c.env, null);
+  } else {
+    return mcpAuthHandler(c.req.raw, c.env, c.executionCtx);
+  }
+});
+
+// Root handler
+app.get('/', (c) => {
+  return c.text('MCP OAuth Server');
+});
+
+// Main export
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const startTime = Date.now();
@@ -199,16 +220,6 @@ export default {
     const metrics = new MetricsCollector(env);
     
     try {
-      const url = new URL(request.url);
-      logger.debug('Request received', {
-        method: request.method,
-        path: url.pathname,
-        client_ip: request.headers.get('CF-Connecting-IP'),
-        user_agent: request.headers.get('User-Agent'),
-        origin: request.headers.get('Origin'),
-        referer: request.headers.get('Referer'),
-      });
-      
       // Validate configuration on first request
       try {
         validateConfiguration(env);
@@ -223,383 +234,51 @@ export default {
       // Initialize clients on first request (this is idempotent)
       await initializeClients(env);
       
-      // Handle CORS preflight requests globally
-      if (request.method === 'OPTIONS') {
-        return new Response(null, {
-          status: 204,
-          headers: {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-            'Access-Control-Max-Age': '86400',
-          },
-        });
-      }
+      // Log request details
+      const url = new URL(request.url);
+      logger.debug('Request received', {
+        method: request.method,
+        path: url.pathname,
+        client_ip: request.headers.get('CF-Connecting-IP'),
+        user_agent: request.headers.get('User-Agent'),
+        origin: request.headers.get('Origin'),
+        referer: request.headers.get('Referer'),
+      });
       
-      // Handle metadata endpoints before OAuth provider
-      if (url.pathname === '/.well-known/oauth-authorization-server' && request.method === 'GET') {
-        const baseUrl = env.PUBLIC_URL || url.origin;
-        return new Response(JSON.stringify({
-          issuer: baseUrl,
-          authorization_endpoint: `${baseUrl}/oauth/authorize`,
-          token_endpoint: `${baseUrl}/oauth/token`,
-          registration_endpoint: `${baseUrl}/oauth/register`,
-          introspection_endpoint: `${baseUrl}/oauth/introspect`,
-          revocation_endpoint: `${baseUrl}/oauth/revoke`,
-          response_types_supported: ["code"],
-          grant_types_supported: ["authorization_code", "refresh_token"],
-          scopes_supported: ["mcp"],
-          code_challenge_methods_supported: ["S256"],
-          token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
-          introspection_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
-          revocation_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
-          service_documentation: "https://github.com/modelcontextprotocol/specification",
-          ui_locales_supported: ["en"],
-          // Add MCP-specific metadata
-          mcp_endpoint: `${baseUrl}/mcp`,
-          mcp_transport_types: ["sse", "http"],
-        }, null, 2), {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
-          }
-        });
-      }
+      // Process request through Hono app
+      const response = await app.fetch(request, env, ctx);
       
-      if (url.pathname === '/.well-known/oauth-protected-resource' && request.method === 'GET') {
-        const baseUrl = env.PUBLIC_URL || url.origin;
-        return new Response(JSON.stringify({
-          resource: baseUrl,
-          authorization_servers: [baseUrl],
-          scopes_supported: ["mcp"],
-          bearer_methods_supported: ["header"],
-          resource_documentation: "https://github.com/modelcontextprotocol/specification",
-        }, null, 2), {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
-          }
-        });
-      }
-      
-      // Health check endpoint
-      if (url.pathname === '/health' && request.method === 'GET') {
-        return handleHealthCheck(env);
-      }
-      
-      // Metrics endpoint
-      if (url.pathname === '/metrics' && request.method === 'GET') {
-        return handleMetricsEndpoint(request, env);
-      }
-      
-      // Handle MCP routes with manual authentication
-      if (url.pathname === '/mcp' || url.pathname.startsWith('/mcp/')) {
-        logger.debug('Handling MCP route with manual authentication');
-        const response = await mcpAuthHandler(request, env, ctx);
-        await metrics.recordRequestMetrics(request, response, startTime);
-        return response;
-      }
-      
-      // Apply rate limiting to token endpoint
-      if (url.pathname === '/oauth/token' && request.method === 'POST') {
-        // Log the original request before any modifications
-        const debugClone = request.clone();
-        const debugFormData = await debugClone.formData();
-        const debugParams: Record<string, string> = {};
-        for (const [key, value] of debugFormData.entries()) {
-          debugParams[key] = value.toString();
-        }
-        logger.info('Token exchange request (original)', {
-          grant_type: debugParams.grant_type,
-          client_id: debugParams.client_id,
-          client_secret: debugParams.client_secret ? 'present' : 'missing',
-          code: debugParams.code ? 'present' : 'missing',
-          code_verifier: debugParams.code_verifier ? 'present' : 'missing',
-          redirect_uri: debugParams.redirect_uri,
-          user_agent: request.headers.get('User-Agent'),
-        });
-        
-        const clientIp = request.headers.get('CF-Connecting-IP') || 'unknown';
-        const rateLimitKey = `token:${clientIp}`;
-        
-        const rateLimitResult = await checkRateLimit(env, rateLimitKey, {
-          windowMs: 60000, // 1 minute
-          maxRequests: 10, // 10 requests per minute
-        });
-        
-        if (!rateLimitResult.allowed) {
-          await audit.log(request, 'token_issued', {
-            client_id: 'unknown',
-            success: false,
-            error_code: 'rate_limit_exceeded',
-            details: { rate_limit: rateLimitResult },
-          });
-          
-          metrics.recordCounter('oauth_rate_limit_exceeded', 1, {
-            endpoint: 'token',
-            client_ip: clientIp,
-          });
-          
-          const response = new Response(JSON.stringify({
-            error: 'rate_limit_exceeded',
-            error_description: 'Too many requests. Please try again later.',
-          }), {
-            status: 429,
-            headers: {
-              'Content-Type': 'application/json',
-              'Retry-After': rateLimitResult.retryAfter?.toString() || '60',
-              'X-RateLimit-Limit': '10',
-              'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-              'X-RateLimit-Reset': rateLimitResult.reset.toString(),
-            },
-          });
-          
-          await metrics.recordRequestMetrics(request, response, startTime);
-          return response;
-        }
-        
-        // Check if this is a refresh token grant
-        const formData = await request.clone().formData();
-        const grantType = formData.get('grant_type')?.toString();
-        
-        if (grantType === 'refresh_token') {
-          const refreshResponse = await handleRefreshTokenGrant(request, env, formData);
-          if (refreshResponse) {
-            await metrics.recordRequestMetrics(request, refreshResponse, startTime);
-            return refreshResponse;
-          }
-        }
-        
-        // Handle PKCE token exchange ourselves since OAuth provider doesn't support it properly
-        if (grantType === 'authorization_code' && formData.get('code_verifier')) {
-          const code = formData.get('code')?.toString();
-          const clientId = formData.get('client_id')?.toString();
-          const codeVerifier = formData.get('code_verifier')?.toString();
-          const redirectUri = formData.get('redirect_uri')?.toString();
-          
-          if (!code || !clientId || !codeVerifier || !redirectUri) {
-            const response = new Response(JSON.stringify({
-              error: 'invalid_request',
-              error_description: 'Missing required parameters',
-            }), {
-              status: 400,
-              headers: { 'Content-Type': 'application/json' },
-            });
-            await metrics.recordRequestMetrics(request, response, startTime);
-            return response;
-          }
-          
-          // Get authorization code data
-          logger.debug('Looking up authorization code', {
-            code,
-            lookup_key: `code:${code}`,
-          });
-          
-          const codeData = await env.OAUTH_KV.get(`code:${code}`);
-          if (!codeData) {
-            // List all keys to debug
-            const allKeys = await env.OAUTH_KV.list({ prefix: 'code:' });
-            logger.warn('Invalid authorization code', { 
-              client_id: clientId,
-              code,
-              lookup_key: `code:${code}`,
-              available_codes: allKeys.keys.map(k => k.name),
-            });
-            const response = new Response(JSON.stringify({
-              error: 'invalid_grant',
-              error_description: 'Invalid or expired authorization code',
-            }), {
-              status: 400,
-              headers: { 'Content-Type': 'application/json' },
-            });
-            await metrics.recordRequestMetrics(request, response, startTime);
-            return response;
-          }
-          
-          const authCode = JSON.parse(codeData);
-          
-          // Validate client_id matches
-          if (authCode.client_id !== clientId) {
-            logger.warn('Client ID mismatch', { 
-              provided: clientId,
-              expected: authCode.client_id,
-            });
-            const response = new Response(JSON.stringify({
-              error: 'invalid_grant',
-              error_description: 'Authorization code was issued to another client',
-            }), {
-              status: 400,
-              headers: { 'Content-Type': 'application/json' },
-            });
-            await metrics.recordRequestMetrics(request, response, startTime);
-            return response;
-          }
-          
-          // Validate redirect_uri matches
-          if (authCode.redirect_uri !== redirectUri) {
-            logger.warn('Redirect URI mismatch', {
-              provided: redirectUri,
-              expected: authCode.redirect_uri,
-            });
-            const response = new Response(JSON.stringify({
-              error: 'invalid_grant',
-              error_description: 'Redirect URI mismatch',
-            }), {
-              status: 400,
-              headers: { 'Content-Type': 'application/json' },
-            });
-            await metrics.recordRequestMetrics(request, response, startTime);
-            return response;
-          }
-          
-          // Validate PKCE code_verifier
-          if (authCode.code_challenge) {
-            const encoder = new TextEncoder();
-            const data = encoder.encode(codeVerifier);
-            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-            const hashArray = Array.from(new Uint8Array(hashBuffer));
-            const computedChallenge = btoa(String.fromCharCode(...hashArray))
-              .replace(/\+/g, '-')
-              .replace(/\//g, '_')
-              .replace(/=/g, '');
-            
-            if (computedChallenge !== authCode.code_challenge) {
-              logger.warn('PKCE verification failed', { client_id: clientId });
-              const response = new Response(JSON.stringify({
-                error: 'invalid_grant',
-                error_description: 'PKCE verification failed',
-              }), {
-                status: 400,
-                headers: { 'Content-Type': 'application/json' },
-              });
-              await metrics.recordRequestMetrics(request, response, startTime);
-              return response;
-            }
-          }
-          
-          // Delete the authorization code (one-time use)
-          await env.OAUTH_KV.delete(`code:${code}`);
-          
-          // Create access token
-          const tokenManager = new (await import('./token-utils')).TokenManager(env);
-          const { access_token, expires_in, refresh_token } = await tokenManager.createAccessToken({
-            client_id: clientId,
-            user_id: authCode.user_id,
-            user_email: authCode.user_email,
-            user_login: authCode.user_login,
-            scope: authCode.scope || 'mcp',
-            includeRefreshToken: true,
-          });
-          
-          logger.info('Token issued successfully via PKCE', {
-            client_id: clientId,
-            user_id: authCode.user_id,
-          });
-          
-          await audit.log(request, 'token_issued', {
-            client_id: clientId,
-            user_id: authCode.user_id,
-            user_email: authCode.user_email,
-            success: true,
-            details: {
-              grant_type: 'authorization_code',
-              pkce: true,
-            },
-          });
-          
-          const response = new Response(JSON.stringify({
-            access_token,
-            token_type: 'Bearer',
-            expires_in,
-            refresh_token,
-            scope: authCode.scope || 'mcp',
-          }), {
-            status: 200,
-            headers: { 
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*',
-              'Access-Control-Allow-Methods': 'POST, OPTIONS',
-              'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-            },
-          });
-          
-          await metrics.recordRequestMetrics(request, response, startTime);
-          return response;
-        }
-        
-      }
-      
-      // Log all requests to see what's happening
-      if (url.pathname === '/oauth/register') {
-        logger.info('Registration request received', {
-          method: request.method,
-          headers: Object.fromEntries(request.headers.entries()),
-        });
-      }
-      
-      
-      // Clone request for potential later use
-      const clonedRequest = request.clone();
-      
-      // Pass through to the OAuth provider
-      const response = await provider.fetch(request, env, ctx);
-      
-      // Handle token endpoint specially
-      if (url.pathname === '/oauth/token' && request.method === 'POST') {
-        // Read the response body once
-        const responseText = await response.text();
-        let responseData = null;
-        
+      // Audit logging for specific endpoints
+      if (url.pathname === '/oauth/token' && request.method === 'POST' && response.status === 200) {
         try {
-          responseData = JSON.parse(responseText);
-        } catch (e) {
-          // Not JSON response
-        }
-        
-        // Create new response with CORS headers
-        const newResponse = new Response(responseText, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: new Headers(response.headers)
-        });
-        newResponse.headers.set('Access-Control-Allow-Origin', '*');
-        newResponse.headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-        newResponse.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-        
-        // Audit logging
-        if (response.status === 200 && responseData?.access_token) {
-          // Parse request body to get client_id from the cloned request
-          const formData = await clonedRequest.formData().catch(() => null);
-          const clientId = formData?.get('client_id')?.toString() || 'unknown';
+          const responseClone = response.clone();
+          const responseData = await responseClone.json();
           
-          await audit.log(request, 'token_issued', {
-            client_id: clientId,
-            success: true,
-            details: {
-              grant_type: formData?.get('grant_type')?.toString(),
-              scope: responseData.scope,
-            },
-          });
+          if (responseData.access_token) {
+            const formData = await request.clone().formData().catch(() => null);
+            const clientId = formData?.get('client_id')?.toString() || 'unknown';
+            
+            await audit.log(request, 'token_issued', {
+              client_id: clientId,
+              success: true,
+              details: {
+                grant_type: formData?.get('grant_type')?.toString(),
+                scope: responseData.scope,
+              },
+            });
+          }
+        } catch {
+          // Ignore audit logging errors
         }
-        
-        // Record metrics and return the new response
-        await metrics.recordRequestMetrics(request, newResponse, startTime);
-        return newResponse;
       }
+      
+      // Record metrics
+      await metrics.recordRequestMetrics(request, response, startTime);
       
       logger.debug('Request completed', {
         status: response.status,
         path: url.pathname,
       });
-      
-      // Record metrics
-      await metrics.recordRequestMetrics(request, response, startTime);
       
       return response;
     } catch (error) {
@@ -626,59 +305,59 @@ export default {
       const now = Date.now();
       let deletedCount = 0;
       
-      // List all keys
-      const allKeys = await env.OAUTH_KV.list();
+      // List all keys with different prefixes
+      const prefixes = ['tok:', 'code:', 'auth_session:', 'reg_token:', 'ratelimit:'];
       
-      for (const key of allKeys.keys) {
-        // Check different key types - new format uses token itself as key
-        if (key.name.startsWith('token_') || key.name.startsWith('refresh_') || 
-            key.name.startsWith('code:') || key.name.startsWith('session:') ||
-            // Legacy format support
-            key.name.startsWith('token:') || key.name.startsWith('refresh:')) {
-          const value = await env.OAUTH_KV.get(key.name);
+      for (const prefix of prefixes) {
+        const keys = await env.KV.list({ prefix });
+        
+        for (const key of keys.keys) {
+          const value = await env.KV.get(key.name);
+          
           if (value) {
             try {
               const data = JSON.parse(value);
-              // Check if expired
-              if (data.expires_at && new Date(data.expires_at).getTime() < now) {
-                await env.OAUTH_KV.delete(key.name);
+              
+              // Check various expiration fields
+              let isExpired = false;
+              
+              if (data.expires_at) {
+                isExpired = new Date(data.expires_at).getTime() < now;
+              } else if (data.expiresAt) {
+                isExpired = new Date(data.expiresAt).getTime() < now;
+              } else if (data.created_at && prefix === 'auth_session:') {
+                // Sessions expire after 10 minutes
+                isExpired = (now - new Date(data.created_at).getTime()) > 600000;
+              } else if (data.resetAt && prefix === 'ratelimit:') {
+                // Rate limit entries expire after their reset time
+                isExpired = data.resetAt < now;
+              }
+              
+              if (isExpired) {
+                await env.KV.delete(key.name);
                 deletedCount++;
-                logger.debug('Deleted expired item', { key: key.name });
+                logger.debug('Deleted expired item', { key: key.name, prefix });
               }
             } catch (e) {
-              // If we can't parse it, it's probably old/corrupted, delete it
-              await env.OAUTH_KV.delete(key.name);
-              deletedCount++;
-              logger.warn('Deleted invalid item', { key: key.name });
+              // If we can't parse it, it's probably old/corrupted
+              if (prefix !== 'ratelimit:') { // Rate limit keys might not be JSON
+                await env.KV.delete(key.name);
+                deletedCount++;
+                logger.warn('Deleted invalid item', { key: key.name, prefix });
+              }
             }
-          }
-        }
-      }
-      
-      // Clean up sessions from SESSION_KV as well
-      const sessionKeys = await env.SESSION_KV.list();
-      for (const key of sessionKeys.keys) {
-        const value = await env.SESSION_KV.get(key.name);
-        if (value) {
-          try {
-            const data = JSON.parse(value);
-            // Session data has createdAt timestamp
-            if (data.createdAt && (now - data.createdAt) > 300000) { // 5 minutes
-              await env.SESSION_KV.delete(key.name);
-              deletedCount++;
-              logger.debug('Deleted expired session', { key: key.name });
-            }
-          } catch (e) {
-            // Delete invalid sessions
-            await env.SESSION_KV.delete(key.name);
-            deletedCount++;
           }
         }
       }
       
       logger.info('Cleanup completed', { deletedCount });
     } catch (error) {
-      logger.error('Cleanup failed', { error: error instanceof Error ? error.message : String(error) });
+      logger.error('Cleanup failed', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
     }
   }
 };
+
+// Export Durable Objects
+export { RateLimiter } from './rate-limiter';

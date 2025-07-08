@@ -1,33 +1,22 @@
 # Cloudflare MCP OAuth Template
 
-This repo is very much incomplete, and as you can tell _very_ AI driven. But it does somewhat work which hopefully can help others trying to deploy oauth to claude desktop
-
-> ⚠️ **SECURITY NOTICE**: This template is designed for LOCAL DEVELOPMENT and personal use. 
-> It contains intentional security trade-offs for ease of use:
-> - CORS allows all origins (`*`)
-> - OAuth client registration is unrestricted
-> - Tokens are stored unencrypted
-> - Rate limiting is minimal
-> 
-> DO NOT deploy to production without implementing proper security measures. See [SECURITY.md](./SECURITY.md) for hardening guidelines.
-
-A complete template for deploying MCP (Model Context Protocol) servers with OAuth 2.1 authentication using GitHub as the identity provider, Cloudflare Workers, and Tunnels. Built with `@cloudflare/workers-oauth-provider` for robust OAuth handling.
+A production-ready OAuth 2.1 server for MCP (Model Context Protocol) servers with full compliance to the MCP authorization specification. Provides secure authentication via GitHub OAuth with enterprise-grade security features.
 
 ## Overview
 
 This template provides:
-- OAuth 2.1 authorization server with GitHub authentication
-- Automatic PKCE (Proof Key for Code Exchange) support
-- Refresh token support for long-lived sessions
-- Rate limiting on token endpoints (via Durable Objects)
-- Audit logging for all authorization events
-- Metrics collection with configurable endpoints
-- Health check and monitoring endpoints
-- Token introspection and revocation endpoints
-- Cloudflare Tunnel for secure MCP server exposure
-- Docker deployment for MCP servers
-- Terraform automation for infrastructure
-- Flexible access control (users, organizations, teams, email domains)
+- **OAuth 2.1 Compliant** - Full implementation with mandatory PKCE (S256 only)
+- **MCP Specification Compliant** - Follows Model Context Protocol authorization requirements
+- **GitHub Authentication** - Secure identity verification via GitHub OAuth
+- **Dynamic Client Registration** - RFC 7591 compliant with registration access tokens
+- **Token Security** - SHA-256 hashed storage, no query parameter tokens allowed
+- **Access Control** - Flexible rules for users, organizations, teams, and email domains
+- **Rate Limiting** - DDoS protection via Durable Objects
+- **Audit Logging** - Complete authorization event tracking
+- **Metrics & Monitoring** - Built-in health checks and metrics endpoints
+- **Token Management** - Introspection (RFC 7662) and revocation (RFC 7009)
+- **Infrastructure as Code** - Terraform automation for all resources
+- **Secure Tunnel** - Cloudflare Tunnel for MCP server exposure
 - Enterprise-grade logging with configurable levels
 
 ## Architecture

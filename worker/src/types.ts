@@ -1,7 +1,6 @@
 export interface Env {
-  // KV Namespaces
-  OAUTH_KV: KVNamespace;
-  SESSION_KV: KVNamespace;
+  // KV Namespace
+  KV: KVNamespace;
   
   // GitHub OAuth Configuration
   GITHUB_CLIENT_ID: string;
@@ -29,6 +28,15 @@ export interface Env {
   
   // Rate limiting
   RATE_LIMITER?: DurableObjectNamespace;
+  DISABLE_RATE_LIMITING?: string;
+  
+  // Security
+  TOKEN_ENCRYPTION_KEY?: string;
+  ALLOWED_HOSTS?: string;
+  ALLOWED_ORIGINS?: string;
+  
+  // GitHub Service Account (for org/team validation)
+  GITHUB_ACCESS_TOKEN?: string;
 }
 
 export interface MCPClient {
